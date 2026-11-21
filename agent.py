@@ -18,6 +18,9 @@ capture win scores far less. The zones only serve as a home base.
   other what they see, and the footman tells the squad where it is.
 * Archers: footmen look ahead at where each enemy fighter can reach in its next two
   activations, and the footman nearest an archer about to be attacked moves to intercept.
+* Home: one footman holds our home zone for the whole match, so it keeps scoring and a raider
+  never takes its points for free. Against an enemy that parks its army on a zone and plays for
+  points, that second zone is what keeps us ahead.
 
 Every move toward a goal is routed over the whole field, so units walk around the river through
 a passage instead of stalling on its bank.
@@ -343,6 +346,7 @@ class ArmyPlan:
     messaging. The plan lives in red's frame, where the enemy lies toward +q, and is mirrored
     through the field center for blue. ``zone_center`` and ``zone_tiles`` are the middle zone.
 
+    * The home guard, the footman with the cheapest route to our home zone, holds it.
     * Two flank squads, wing 0 at the north outer passage and wing 1 at the south one. Each has
       the footman and the archer with the cheapest route to its post, plus half the cavalry. The
       squad regroups at its post on our side of its passage, marches through the passage toward
@@ -353,8 +357,9 @@ class ArmyPlan:
       together. The footmen take the zone's other tiles, with one spare footman in reserve behind
       it, and the archers take posts further back that stay within bow range of the zone.
 
-    Without a home zone on each side of the river, there are no flank footmen or archers and all
-    of them play for the middle, while the riders head for beside the middle zone instead.
+    Without a home zone on each side of the river, there are no home guard, flank footmen or
+    archers and all of them play for the middle, while the riders head for beside the middle zone
+    instead.
     """
 
     FILE_SPACING = 2  # rows between neighboring archers: 2 leaves one open tile between them
@@ -442,6 +447,13 @@ class ArmyPlan:
             costs = terrain.field(goal)
             return min(pool, key=lambda index: (costs.get(spawns[(kind, index)], _UNREACHABLE), index))
 
+        # One footman holds our home zone, so a raider never takes its points for free. The plan
+        # only spares one when the middle still keeps the runner and two more.
+        self.home_guard: int | None = None
+        if self.three_zones and len(free["footman"]) >= 6:
+            self.home_guard = cheapest("footman", self.centers["home"])
+            free["footman"].remove(self.home_guard)
+
         # One footman and one archer go with each flank squad, while at least three footmen and two
         # archers stay for the middle, so the plan only splits a roster large enough for it.
         self.flankers: dict[int, int] = {}  # wing -> its flank footman
@@ -471,7 +483,10 @@ class ArmyPlan:
         return kind == "footman" and index == self.runner
 
     def role(self, kind: str, index: int) -> str:
-        """``flank`` and ``flank_archer`` for a flank squad's footman and archer, else the type."""
+        """``home`` for the home guard, ``flank`` and ``flank_archer`` for a flank squad's footman
+        and archer, otherwise the unit type."""
+        if kind == "footman" and index == self.home_guard:
+            return "home"
         if kind == "footman" and index in self.flank_wing:
             return "flank"
         if kind == "archer" and index in self.archer_wing:
@@ -497,6 +512,8 @@ class ArmyPlan:
 
     def zone_for(self, role: str) -> frozenset[Hex]:
         """The zone a role heads for, in board coordinates."""
+        if role == "home" and self.three_zones:
+            return self.zones["home"]
         if role in ("flank", "flank_archer", "cavalry") and self.three_zones:
             return self.zones["enemy"]
         return self.zone_board
@@ -555,6 +572,8 @@ class ArmyPlan:
         role = self.role(kind, index)
         if role in ("flank", "flank_archer", "cavalry"):
             return self.post(kind, index)
+        if role == "home":
+            return self.center("home")
         if self.is_runner(kind, index):
             return self._to_board(*self.zone_center)
         slot_index = self.infantry[kind].index(index)
@@ -991,8 +1010,11 @@ class Context:
         """True once this unit's group has reached where it is going.
 
         The middle group has arrived once its regroup is over. A flank squad has arrived once its
-        footman has reached the enemy's home zone, after which it swings toward the middle.
+        footman has reached the enemy's home zone, after which it swings toward the middle. The
+        home guard always has.
         """
+        if self.role == "home":
+            return True
         if self.in_squad:
             return self.swung
         return self.advanced or self.round > self.plan.arrive_round
@@ -1694,6 +1716,41 @@ class FlankMarch(Behavior):
         return ctx.order(path, ctx.target_from(tile.at_path_end(ctx.here, path))[1])
 
 
+def _hold_zone(ctx: Context, zone: frozenset[Hex], center: AxialPosition) -> SkirmishAction:
+    """Stand on a tile of ``zone`` and fight from it, or walk to the nearest free one.
+
+    On the zone, an adjacent enemy is struck, one inside the zone first, otherwise whatever is in
+    range. Off it, the unit walks to the cheapest free tile it knows of, or the zone's center,
+    striking on the way.
+    """
+    here = _hex(ctx.here)
+    if here in zone:
+        adjacent = [enemy for enemy in ctx.enemies if tile.distance(ctx.here, enemy["position"]) == 1]
+        if adjacent:
+            target = min(
+                adjacent, key=lambda enemy: (_hex(enemy["position"]) not in zone, enemy["hit_points"], enemy["unit_id"])
+            )
+            return ctx.order(0, target)
+        return ctx.order(0, ctx.target_from(ctx.here)[1])
+    free = [cell for cell in zone if ctx.terrain.standable(cell) and cell not in ctx.occupied]
+    goal = (
+        _board(min(free, key=lambda cell: (ctx.nav.travel_cost(ctx.here, _board(cell)), cell)))
+        if free
+        else center
+    )
+    path = ctx.nav.step_toward(goal)
+    return ctx.order(path, ctx.target_from(tile.at_path_end(ctx.here, path))[1])
+
+
+class GuardHome(Behavior):
+    """Home guard: hold our home zone, so it scores and no raider takes its points for free."""
+
+    def propose(self, ctx: Context) -> SkirmishAction | None:
+        if "home" not in ctx.plan.zones:
+            return None
+        return _hold_zone(ctx, ctx.plan.zones["home"], ctx.plan.center("home"))
+
+
 class Engage(Behavior):
     """Middle footman, once the regroup is over: leave the zone to attack an enemy close by.
 
@@ -2012,6 +2069,12 @@ class Agent:
     # Blocks are stateless, so every unit can share these instances. KeepFormation still names
     # the nearest enemy, so units strike anything in range on the way to their tile.
     PLAYBOOK: dict[str, list[Behavior]] = {
+        # The home guard holds our home zone for the whole match, fighting whatever comes to it.
+        "home": [
+            GuardHome(),
+            FightBack(1),
+            HoldPosition(),
+        ],
         # A flank squad's footman regroups at its post, marches through its passage toward the
         # enemy's home zone and then the middle, attacking every enemy it sees on the way. Its
         # squad's archer comes first: it steps in front of any enemy about to reach an archer.
