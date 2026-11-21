@@ -1,0 +1,16 @@
+DESIGN GOAL:
+
+I wanted my army to overwhelm opponents and win through total elimination. By splitting the army into three groups, I want to pressure the enemy on all three sides, creating chaos and
+ruining/overpowering enemy strategies.
+
+SHORT REFLECTION:
+
+From the previous seasons, I found that playing around the three capture zones wasn't a good strategy. The capture zones aren't rewarding enough, and it takes too long to win by points.
+Additionally, I got feedback that my army wasn't properly cooperating and was wasting turns doing nothing, so I decided to make them act faster, more efficiently, and more coordinated.
+I used programming strategies like lookahead, behavioral blocks, and message communication between units. I also trained this agent against my previous agents and compared the results. That
+way, I could see whether the changes were an improvement or not. I also made slight variations to this agent's strategy, like changing which units take part in the flank, and compared the results
+before and after the change to figure out the best possible agent.
+
+AI DISCLOSURE:
+
+I used Claude Code to help with this assignment. It modified and changed a lot of code. I checked its work by reading over the code and watching the agent to see the desired results.
